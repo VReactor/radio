@@ -1,0 +1,124 @@
+---
+- name: Creates deploy dir
+  file:
+    path: /srv/deploy
+    state: directory
+
+- name: check music.sha256
+  stat:
+    path: /root/video/music.sha256
+  register: music
+
+- name: create music.sha256
+  file:
+    path: /root/music.sha256
+    state: touch
+    owner: root
+    group: root
+    mode: 0755
+  when: not music.stat.exists
+
+- name: Create a music link
+  ansible.builtin.file:
+    src: /home/{{ user }}/music
+    dest: /root/music
+    state: link
+  when: user != 'root'
+
+- name: Create a video link
+  ansible.builtin.file:
+    src: /home/{{ user }}/video
+    dest: /root/video
+    state: link
+  when: user != 'root'
+
+- name: new video source
+  stat:
+    path: /root/video/video.mp4
+  register: video
+
+- name: move video
+  shell: mv /root/video/video.mp4 /root/video/play.mp4
+  when: video.stat.exists
+  notify:
+  - restart ffmpeg
+
+- name: create mpc alias
+  blockinfile:
+    path: /root/.bashrc
+    block: |
+      alias next='docker exec --tty mpd mpc next'
+      alias prev='docker exec --tty mpd mpc prev'
+
+- name: Use sha256 to calculate checksum
+  ansible.builtin.stat:
+    path: /root/music/
+    checksum_algorithm: sha256
+  register: music_dir_ls
+
+- name: music dir sha256
+  set_fact: 
+    music_dir_sha256: "{{ music_dir_ls | hash('sha256') }}"
+
+- name: read music.sha256
+  slurp:
+    src: /root/music.sha256
+  register: slurped_user_data
+
+- name: Decode music.sha256 #(hack)
+  set_fact:
+    old_music_dir_sha256: "{{ slurped_user_data.content | b64decode }}"
+
+- name: template ffmpeg entrypoint.sh
+  template:
+    src: entrypoint.ffmpeg.sh.j2
+    dest: /srv/deploy/entrypoint.ffmpeg.sh
+    owner: root
+    group: root
+    mode: 0755
+  notify:
+  - restart ffmpeg
+
+- name: template mpd entrypoint.sh
+  template:
+    src: entrypoint.mpd.sh.j2
+    dest: /srv/deploy/entrypoint.mpd.sh
+    owner: root
+    group: root
+    mode: 0755
+  notify:
+  - restart ffmpeg
+
+- name: copy font
+  copy:
+    src: font.ttf
+    dest: /root/video/font.ttf
+    owner: root
+    group: root
+    mode: 0755
+
+- name: template docker
+  template: 
+    src: "docker-compose.yaml.j2" 
+    dest: /srv/deploy/docker-compose.yaml
+    owner: root 
+    group: root 
+    mode: 0644
+
+- name: deploy
+  docker_compose:
+    project_src: /srv/deploy/
+    state: present
+    remove_orphans: yes
+   
+- name: restart mpd
+  shell: docker restart mpd
+  when: old_music_dir_sha256 != music_dir_sha256
+  notify:
+  - restart ffmpeg
+
+- name: new sha256 output
+  local_action: 
+    module: copy 
+    content: "{{ music_dir_sha256 }}"
+    dest: /root/music.sha256

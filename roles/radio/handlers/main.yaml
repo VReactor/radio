@@ -1,0 +1,6 @@
+---
+- name: restart ffmpeg
+  shell: docker restart ffmpeg
+
+- name: restart mpd
+  shell: docker restart mpd
